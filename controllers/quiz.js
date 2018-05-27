@@ -1,11 +1,20 @@
 const Sequelize = require("sequelize");
+const Op = Sequelize.Op;
 const {models} = require("../models");
-
+const paginate = require('../helpers/paginate').paginate;
 
 // Autoload the quiz with id equals to :quizId
 exports.load = (req, res, next, quizId) => {
 
-    models.quiz.findById(quizId)
+    models.quiz.findById(quizId, {
+        include: [
+            {
+            model : models.tip,
+            include : [{model: models.user, as: 'author'}]
+            },
+            {model: models.user, as: 'author'}
+        ]
+    })
     .then(quiz => {
         if (quiz) {
             req.quiz = quiz;
@@ -18,12 +27,73 @@ exports.load = (req, res, next, quizId) => {
 };
 
 
+// MW that allows actions only if the user logged in is admin or is the author of the quiz.
+exports.adminOrAuthorRequired = (req, res, next) => {
+
+    const isAdmin  = !!req.session.user.isAdmin;
+    const isAuthor = req.quiz.authorId === req.session.user.id;
+
+    if (isAdmin || isAuthor) {
+        next();
+    } else {
+        console.log('Prohibited operation: The logged in user is not the author of the quiz, nor an administrator.');
+        res.send(403);
+    }
+};
+
+
 // GET /quizzes
 exports.index = (req, res, next) => {
 
-    models.quiz.findAll()
+    let countOptions = {
+        where: {}
+    };
+
+    let title = "Questions";
+
+    // Search:
+    const search = req.query.search || '';
+    if (search) {
+        const search_like = "%" + search.replace(/ +/g,"%") + "%";
+
+        countOptions.where.question = { [Op.like]: search_like };
+    }
+
+    // If there exists "req.user", then only the quizzes of that user are shown
+    if (req.user) {
+        countOptions.where.authorId = req.user.id;
+        title = "Questions of " + req.user.username;
+    }
+
+    models.quiz.count(countOptions)
+    .then(count => {
+
+        // Pagination:
+
+        const items_per_page = 10;
+
+        // The page to show is given in the query
+        const pageno = parseInt(req.query.pageno) || 1;
+
+        // Create a String with the HTMl used to render the pagination buttons.
+        // This String is added to a local variable of res, which is used into the application layout file.
+        res.locals.paginate_control = paginate(count, items_per_page, pageno, req.url);
+
+        const findOptions = {
+            ...countOptions,
+            offset: items_per_page * (pageno - 1),
+            limit: items_per_page,
+            include: [{model: models.user, as: 'author'}]
+        };
+
+        return models.quiz.findAll(findOptions);
+    })
     .then(quizzes => {
-        res.render('quizzes/index.ejs', {quizzes});
+        res.render('quizzes/index.ejs', {
+            quizzes, 
+            search,
+            title
+        });
     })
     .catch(error => next(error));
 };
@@ -54,13 +124,16 @@ exports.create = (req, res, next) => {
 
     const {question, answer} = req.body;
 
+    const authorId = req.session.user && req.session.user.id || 0;
+
     const quiz = models.quiz.build({
         question,
-        answer
+        answer,
+        authorId
     });
 
     // Saves only the fields question and answer into the DDBB
-    quiz.save({fields: ["question", "answer"]})
+    quiz.save({fields: ["question", "answer", "authorId"]})
     .then(quiz => {
         req.flash('success', 'Quiz created successfully.');
         res.redirect('/quizzes/' + quiz.id);
@@ -117,7 +190,7 @@ exports.destroy = (req, res, next) => {
     req.quiz.destroy()
     .then(() => {
         req.flash('success', 'Quiz deleted successfully.');
-        res.redirect('/quizzes');
+        res.redirect('/goback');
     })
     .catch(error => {
         req.flash('error', 'Error deleting the Quiz: ' + error.message);
@@ -130,9 +203,7 @@ exports.destroy = (req, res, next) => {
 exports.play = (req, res, next) => {
 
     const {quiz, query} = req;
-
     const answer = query.answer || '';
-
     res.render('quizzes/play', {
         quiz,
         answer
@@ -144,7 +215,6 @@ exports.play = (req, res, next) => {
 exports.check = (req, res, next) => {
 
     const {quiz, query} = req;
-
     const answer = query.answer || "";
     const result = answer.toLowerCase().trim() === quiz.answer.toLowerCase().trim();
 
@@ -155,92 +225,78 @@ exports.check = (req, res, next) => {
     });
 };
 
-
-//Practica6 randomplay al azar una pregunta en BBDD,sin repetir la pregunta.
-//GET quizzes/randomplay
+// GET /quizzes/randomplay
 exports.randomplay = (req, res, next) => {
 
 
+   if(req.session.randomPlay == undefined ) {   
+        req.session.randomPlay = [];
+    }
 
-    //Si session es vacio,desde 0
-    if(req.session.randomplay === undefined) {
-        req.session.nota = 0;
+    const Op = Sequelize.Op;
+    const condicion = {'id': {[Op.notIn]: req.session.randomPlay}};
 
-        models.quiz.findAll()
-            .then(quiz => {
-                req.session.randomplay = quiz;
-                req.session.idofquiz = Math.floor(Math.random()*req.session.randomplay.length);
-                res.render('quizzes/random_play', {
-                    quiz : req.session.randomplay[req.session.idofquiz],
-                    score: req.session.nota
-                });
-
+    models.quiz.count({where: condicion})
+    .then(count => {
+        if (count === 0) {
+            let score = req.session.randomPlay.length;
+            delete req.session.randomPlay;
+            res.render('quizzes/random_nomore', {
+            score : score
+            });
+        req.session.randomPlay = [];
+        } else {
+            return models.quiz.findAll({
+                where: condicion,
+                offset: Math.floor(Math.random() * count), 
+                limit: 1 
             })
-    }
-    //Ya exite alguna quiz en session.
-    else {
-
-        req.session.idofquiz = Math.floor(Math.random()*req.session.randomplay.length);
-        res.render('quizzes/random_play', {
-            quiz: req.session.randomplay[req.session.idofquiz],
-            score: req.session.nota
+            
+            .then(quizzes => {
+                return quizzes[0];
+            });
+        
+        }
+    })
+    .then(quiz => {
+        res.render('quizzes/random_play', {  
+            quiz : quiz,
+            score :req.session.randomPlay.length
         });
+    })
+    .catch(error => next(error));
+              
+}
 
-    }
-
-
-
-
-};
-
+// GET /quizzes/:quizId/randomcheck
 exports.randomcheck = (req, res, next) => {
-    let result = false;
-    let nota = -1;
 
 
-
-    if(trimm(req.query.answer) === trimm(req.session.randomplay[req.session.idofquiz]).answer){
-        req.session.nota++;
-        nota = req.session.nota;
-        result = true;
-        req.session.randomplay.splice(req.session.idofquiz, 1);
-
-
-        if(req.session.randomplay.length === 0) {
-
-                    res.render('quizzes/random_nomore', {
-                        score: req.session.nota
-                    });
-
-
-        }
-        else{
-                res.render('quizzes/random_result', {
-                    score: nota,
-                    result: result,
-                    answer: req.session.randomplay[req.session.idofquiz].answer
-                });
-        }
+    if(req.session.randomPlay == undefined ) {   
+        req.session.randomPlay = [];
     }
-    else{
-        nota = req.session.nota;
-        res.session.nota = 0;
-
-        res.render('quizzes/random_result', {
-            score: nota,
-            result: result,
-            answer: req.query.answer
-        });
+    const player_answer =  req.query.answer || "";
+    const quiz_Answer = req.quiz.answer;     
+    var score = req.session.randomPlay.length; 
+    var result = player_answer.toLowerCase().trim() === quiz_Answer.toLowerCase().trim();
+    
+    if(result){
+            req.session.randomPlay.push(req.quiz.id)
+            score = req.session.randomPlay.length;
     }
-
-
+    res.render('quizzes/random_result', {   
+        score: score, 
+        answer: player_answer,
+        result: result
+    });
 
 };
 
-trimm = rl => {
-    rl = rl.replace(/\s+/g,"");
-    rl = rl.toUpperCase();
-    rl = rl.toLowerCase();
-    rl = rl.trim();
-    return rl;
-};
+
+
+
+
+
+
+
+
