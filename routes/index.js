@@ -1,15 +1,12 @@
 const express = require('express');
 const router = express.Router();
 
-
-//Importar la controlador de quiz.
 const quizController = require('../controllers/quiz');
 
 /* GET home page. */
 router.get('/', (req, res, next) => {
   res.render('index');
 });
-
 
 // Author page.
 router.get('/author', (req, res, next) => {
@@ -18,16 +15,12 @@ router.get('/author', (req, res, next) => {
 
 
 // Autoload for routes using :quizId
-router.param('quizId', quizController.load);
-
-//proyecto I
-router.get('/quizzes/randomplay', quizController.randomplay);
-
-router.get('/quizzes/randomcheck/:Idofquit(\\d+)', quizController.randomcheck);
+router.param('quizId', quizController.load);  // OJO
 
 
 
-// Crud de quizzes
+
+// Routes for the resource /quizzes
 router.get('/quizzes',                     quizController.index);
 router.get('/quizzes/:quizId(\\d+)',       quizController.show);
 router.get('/quizzes/new',                 quizController.new);
@@ -36,9 +29,10 @@ router.get('/quizzes/:quizId(\\d+)/edit',  quizController.edit);
 router.put('/quizzes/:quizId(\\d+)',       quizController.update);
 router.delete('/quizzes/:quizId(\\d+)',    quizController.destroy);
 
-//Jugar de quizzes.
 router.get('/quizzes/:quizId(\\d+)/play',  quizController.play);
 router.get('/quizzes/:quizId(\\d+)/check', quizController.check);
 
+router.get('/quizzes/randomplay', quizController.randomplay);
+router.get('/quizzes/randomcheck/:quizId(\\d+)', quizController.randomcheck);
 
 module.exports = router;
